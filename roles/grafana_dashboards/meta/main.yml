@@ -1,0 +1,7 @@
+---
+galaxy_info:
+  author: Nitin
+  description: 
+  license: 
+  min_ansible_version: "2.9"
+dependencies: []

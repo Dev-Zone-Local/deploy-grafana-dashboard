@@ -1,0 +1,80 @@
+
+- name: Fail if api key is not provided
+  ansible.builtin.fail:
+    msg: "grafana_api_key must be set (provide via group_vars/all.yml or -e)"
+  when: (grafana_api_key | default('')) == ""
+
+- name: Determine dashboards to deploy (explicit list)
+  ansible.builtin.set_fact:
+    dashboards_to_deploy: "{{ dashboards }}"
+  when: dashboards is defined and dashboards | length > 0
+
+- name: Determine dashboards to deploy from role files
+  ansible.builtin.set_fact:
+    dashboards_to_deploy: "{{ lookup('fileglob', role_path + '/files/dashboards/*.json', wantlist=True) }}"
+  when: dashboards is not defined or dashboards | length == 0
+
+- name: No dashboards found (skipping)
+  ansible.builtin.debug:
+    msg: "No dashboard JSON files found or specified"
+  when: dashboards_to_deploy | length == 0
+
+- name: Resolve folder ID (use existing grafana_folder_id by default)
+  ansible.builtin.set_fact:
+    final_folder_id: "{{ grafana_folder_id | default(0) | int }}"
+
+- name: If grafana_folder_name provided, fetch folders list
+  ansible.builtin.uri:
+    url: "{{ grafana_url }}/api/folders"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ grafana_api_key }}"
+    return_content: yes
+    status_code: 200
+    validate_certs: "{{ grafana_validate_certs | default(true) }}"
+  register: grafana_folders
+  when: grafana_folder_name is defined and (grafana_folder_name | length > 0)
+  delegate_to: localhost
+
+- name: Set final_folder_id from existing folder (if found)
+  ansible.builtin.set_fact:
+    final_folder_id: "{{ (grafana_folders.json | selectattr('title','equalto', grafana_folder_name) | list)[0].id }}"
+  when:
+    - grafana_folder_name is defined
+    - grafana_folder_name | length > 0
+    - grafana_folders is defined
+    - (grafana_folders.json | selectattr('title','equalto', grafana_folder_name) | list) | length > 0
+
+- name: Create folder in Grafana when not found
+  ansible.builtin.uri:
+    url: "{{ grafana_url }}/api/folders"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ grafana_api_key }}"
+      Content-Type: "application/json"
+    body: "{{ {'title': grafana_folder_name} }}"
+    body_format: json
+    return_content: yes
+    status_code: [200,409]
+    validate_certs: "{{ grafana_validate_certs | default(true) }}"
+  register: grafana_create_folder
+  when:
+    - grafana_folder_name is defined
+    - grafana_folder_name | length > 0
+    - final_folder_id == 0
+  delegate_to: localhost
+
+- name: Use created folder id
+  ansible.builtin.set_fact:
+    final_folder_id: "{{ grafana_create_folder.json.id }}"
+  when:
+    - grafana_create_folder is defined
+    - grafana_create_folder.json is defined
+
+- name: Process each dashboard file
+  include_tasks: process_dashboard.yml
+  loop: "{{ dashboards_to_deploy }}"
+  loop_control:
+    loop_var: item
+  when: dashboards_to_deploy | length > 0
+
