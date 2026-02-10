@@ -1,80 +1,76 @@
+---
+- name: Find dashboard JSON files when list not provided
+  ansible.builtin.find:
+    paths: "{{ dashboards_dir }}"
+    patterns: "*.json"
+    recurse: true
+  register: dashboards_found
+  when: dashboards | length == 0
 
-- name: Fail if api key is not provided
+- name: Set dashboard list
+  ansible.builtin.set_fact:
+    dashboards_to_process: >-
+      {{ dashboards if dashboards | length > 0 else (dashboards_found.files | map(attribute='path') | list) }}
+
+- name: Fail when no dashboards found
   ansible.builtin.fail:
-    msg: "grafana_api_key must be set (provide via group_vars/all.yml or -e)"
-  when: (grafana_api_key | default('')) == ""
+    msg: "No dashboard JSON files found in {{ dashboards_dir }}"
+  when: dashboards_to_process | length == 0
 
-- name: Determine dashboards to deploy (explicit list)
-  ansible.builtin.set_fact:
-    dashboards_to_deploy: "{{ dashboards }}"
-  when: dashboards is defined and dashboards | length > 0
-
-- name: Determine dashboards to deploy from role files
-  ansible.builtin.set_fact:
-    dashboards_to_deploy: "{{ lookup('fileglob', role_path + '/files/dashboards/*.json', wantlist=True) }}"
-  when: dashboards is not defined or dashboards | length == 0
-
-- name: No dashboards found (skipping)
-  ansible.builtin.debug:
-    msg: "No dashboard JSON files found or specified"
-  when: dashboards_to_deploy | length == 0
-
-- name: Resolve folder ID (use existing grafana_folder_id by default)
-  ansible.builtin.set_fact:
-    final_folder_id: "{{ grafana_folder_id | default(0) | int }}"
-
-- name: If grafana_folder_name provided, fetch folders list
+- name: Get Grafana datasources
   ansible.builtin.uri:
-    url: "{{ grafana_url }}/api/folders"
+    url: "{{ grafana_url }}/api/datasources"
     method: GET
     headers:
       Authorization: "Bearer {{ grafana_api_key }}"
-    return_content: yes
+    return_content: true
     status_code: 200
-    validate_certs: "{{ grafana_validate_certs | default(true) }}"
-  register: grafana_folders
-  when: grafana_folder_name is defined and (grafana_folder_name | length > 0)
-  delegate_to: localhost
+    validate_certs: "{{ grafana_validate_certs }}"
+  register: ds_response
 
-- name: Set final_folder_id from existing folder (if found)
+- name: Select Prometheus datasource
   ansible.builtin.set_fact:
-    final_folder_id: "{{ (grafana_folders.json | selectattr('title','equalto', grafana_folder_name) | list)[0].id }}"
-  when:
-    - grafana_folder_name is defined
-    - grafana_folder_name | length > 0
-    - grafana_folders is defined
-    - (grafana_folders.json | selectattr('title','equalto', grafana_folder_name) | list) | length > 0
+    prometheus_ds: "{{ (ds_response.json | selectattr('type','equalto','prometheus') | list | first) | default({}) }}"
 
-- name: Create folder in Grafana when not found
-  ansible.builtin.uri:
-    url: "{{ grafana_url }}/api/folders"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ grafana_api_key }}"
-      Content-Type: "application/json"
-    body: "{{ {'title': grafana_folder_name} }}"
-    body_format: json
-    return_content: yes
-    status_code: [200,409]
-    validate_certs: "{{ grafana_validate_certs | default(true) }}"
-  register: grafana_create_folder
-  when:
-    - grafana_folder_name is defined
-    - grafana_folder_name | length > 0
-    - final_folder_id == 0
-  delegate_to: localhost
-
-- name: Use created folder id
+- name: Set datasource name and UID
   ansible.builtin.set_fact:
-    final_folder_id: "{{ grafana_create_folder.json.id }}"
-  when:
-    - grafana_create_folder is defined
-    - grafana_create_folder.json is defined
+    datasource_name: "{{ prometheus_ds.name | default(datasource_name) }}"
+    prometheus_uid: "{{ prometheus_ds.uid | default('') }}"
 
-- name: Process each dashboard file
-  include_tasks: process_dashboard.yml
-  loop: "{{ dashboards_to_deploy }}"
+- name: Read dashboard file content
+  ansible.builtin.slurp:
+    path: "{{ item }}"
+  loop: "{{ dashboards_to_process }}"
   loop_control:
-    loop_var: item
-  when: dashboards_to_deploy | length > 0
+    label: "{{ item }}"
+  register: slurped_files
 
+- name: Write processed dashboards to temp files
+  ansible.builtin.copy:
+    content: >-
+      {{ (item.content | b64decode)
+         | replace('${DS_PROMETHEUS}', datasource_name)
+         | replace('$datasource', datasource_name)
+         | replace('${VAR_DATASOURCE}', datasource_name)
+         | replace('${ds_prometheus}', prometheus_uid if prometheus_uid else datasource_name)
+         | replace('$ds_prometheus', prometheus_uid if prometheus_uid else datasource_name)
+      }}
+    dest: "{{ grafana_tmp_dir }}/{{ item.source | basename }}"
+    mode: "0644"
+  loop: "{{ slurped_files.results }}"
+  loop_control:
+    label: "{{ item.source }}"
+  register: temp_files
+
+- name: Import Grafana dashboards (processed)
+  community.grafana.grafana_dashboard:
+    grafana_url: "{{ grafana_url }}"
+    grafana_api_key: "{{ grafana_api_key }}"
+    state: present
+    commit_message: "{{ grafana_commit_message }}"
+    overwrite: "{{ grafana_overwrite }}"
+    validate_certs: "{{ grafana_validate_certs }}"
+    path: "{{ item.dest }}"
+  loop: "{{ temp_files.results }}"
+  loop_control:
+    label: "{{ item.dest }}"

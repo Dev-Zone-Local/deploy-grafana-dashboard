@@ -6,7 +6,7 @@ This workspace contains playbooks and an Ansible role to import and manage Grafa
 - Role: [roles/grafana_dashboards](roles/grafana_dashboards)
   - Dashboard JSONs: [roles/grafana_dashboards/files/dashboards](roles/grafana_dashboards/files/dashboards)
   - Defaults: [roles/grafana_dashboards/defaults/main.yml](roles/grafana_dashboards/defaults/main.yml)
-  - Tasks: [roles/grafana_dashboards/tasks/main.yml](roles/grafana_dashboards/tasks/main.yml), [roles/grafana_dashboards/tasks/process_dashboard.yml](roles/grafana_dashboards/tasks/process_dashboard.yml)
+  - Tasks: [roles/grafana_dashboards/tasks/main.yml](roles/grafana_dashboards/tasks/main.yml)
 - Playbooks:
   - Role-based deploy: [deploy_dashboards.yml](deploy_dashboards.yml)
   - Process + import: [import_dashboards.yml](import_dashboards.yml)
@@ -34,25 +34,25 @@ grafana_url: "http://localhost:3000"
 grafana_api_key: "<your_api_key>"
 grafana_overwrite: true
 grafana_validate_certs: false
-# Optional: set a folder name for dashboards
-grafana_folder_name: "my-folder"
 ```
 
 You can also review defaults in [roles/grafana_dashboards/defaults/main.yml](roles/grafana_dashboards/defaults/main.yml). Key variables:
 - `grafana_url`: Grafana base URL
 - `grafana_api_key`: API key (required)
 - `grafana_overwrite`: Allow updates to existing dashboards
-- `grafana_folder_name`: Target folder title; created if missing
-- `grafana_folder_id`: Explicit folder ID (overridden by `grafana_folder_name` when set)
 - `grafana_validate_certs`: TLS cert validation toggle
+- `grafana_commit_message`: Commit message used on import
+- `dashboards_dir`: Directory to scan for dashboard JSON files
 - `dashboards`: Optional list of dashboard files to import; defaults to all JSONs under role `files/dashboards`
+- `datasource_name`: Fallback datasource name for placeholder replacement
+- `grafana_tmp_dir`: Temp directory for processed dashboards
 
 ## Usage
 ### Option A: Role-based deploy
 Runs the role to import dashboards. The role will:
 - Auto-discover JSON files under [roles/grafana_dashboards/files/dashboards](roles/grafana_dashboards/files/dashboards) unless `dashboards` is provided
-- Resolve or create the target folder by `grafana_folder_name`
-- Skip import when an identical dashboard already exists (hash comparison)
+- Replace common datasource placeholders (e.g., `${DS_PROMETHEUS}`, `$datasource`) using the detected Prometheus datasource name/UID
+- Write processed dashboards to a temp directory, then import them via `community.grafana.grafana_dashboard`
 
 Run:
 
@@ -65,8 +65,7 @@ Override variables inline if needed:
 ```bash
 ansible-playbook -i inventory deploy_dashboards.yml \
   -e grafana_url="http://grafana.example:3000" \
-  -e grafana_api_key="<key>" \
-  -e grafana_folder_name="observability"
+  -e grafana_api_key="<key>"
 ```
 
 Target specific files:
@@ -87,13 +86,12 @@ ansible-playbook -i inventory import_dashboards.yml \
   -e grafana_api_key="<key>"
 ```
 
-## Folder & Dashboard Resolution
-- If `grafana_folder_name` is set, the role fetches existing folders and uses the matching folder ID; if not found, it creates the folder and uses the returned ID.
-- Dashboard identity is derived from the file content; if a UID is present, it attempts to GET the existing dashboard. When the content hash matches, import is skipped.
+## Datasource Resolution
+- The role and the import playbook query Grafana datasources and pick the first Prometheus datasource.
+- If no Prometheus datasource is returned, the replacement falls back to `datasource_name`.
 
 ## Troubleshooting
 - 401/403 errors: Verify `grafana_api_key` and its permissions.
-- Folder not created: Ensure `grafana_folder_name` is set and the API key allows folder creation.
 - TLS issues: Set `grafana_validate_certs: false` for self-signed setups (development only).
 - Datasource not found in import playbook: The playbook falls back to provided `datasource_name`; set it explicitly via `-e datasource_name=Prometheus` if detection fails.
 
