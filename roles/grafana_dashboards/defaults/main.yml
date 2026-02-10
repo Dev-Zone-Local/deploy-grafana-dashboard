@@ -2,9 +2,11 @@
 grafana_url: "http://localhost:3000"
 grafana_api_key: ""
 grafana_overwrite: true
-grafana_folder_name: "dashboard"
-grafana_folder_id: 0
 grafana_validate_certs: false
+grafana_commit_message: "Updated by ansible"
+
+dashboards_dir: "{{ role_path }}/files/dashboards"
 dashboards: []
-grafana_inputs_override: {}
-final_folder_id: 0
+
+datasource_name: "Prometheus"
+grafana_tmp_dir: "/tmp"

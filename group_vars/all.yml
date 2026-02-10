@@ -1,6 +1,0 @@
----
-grafana_url: "http://localhost:3000"
-grafana_api_key: "glsa_sUNxDN3SuJWlbwUpO55So6PqDBn0uy18_3345b0ad"   # set your API key here or pass via -e
-grafana_overwrite: true
-grafana_validate_certs: false
-grafana_folder_name: "test"   # optional: set folder name to place dashboards
